@@ -1,0 +1,19 @@
+# Build output
+/pgweir
+/dist/
+*.test
+*.out
+coverage.*
+
+# Local keys, proofs and exports produced by the examples
+*.key
+*.pub
+proof.json
+plan.json
+changeset.json
+/examples/export/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
