@@ -120,3 +120,94 @@ prefix.
 
 **What.** Up to 50 rows per table; `->` instead of `→` in the human listing;
 `diff` refuses branches that are not OPEN.
+
+## 2026-10-30 — `end_lsn` is the last captured commit (supersedes part of "Capture termination and slot progress")
+
+**What.** `capture_progress.flushed_lsn`, and therefore a merge's `end_lsn`,
+is the commit LSN of the last persisted branch transaction (the slot's
+consistent point before the first one). The slot is still acknowledged up to
+the last keepalive position seen outside a transaction, but that position is
+not persisted.
+**Why.** Persisting the keepalive position made `end_lsn`, the changeset hash
+and `merge --out plan.json` change on every run even when the branch was
+idle, breaking the byte-identical plan requirement. Acknowledging ahead of
+`flushed_lsn` is safe: every transaction committed before that position was
+persisted, and the server never resends anything below its confirmed position.
+
+## 2026-10-30 — Main values are read in the text result format
+
+**What.** Main's rows are fetched with plain column references and the text
+result format of the extended protocol (`pgx.QueryResultFormats{TextFormatCode}`),
+not with `::text` casts (spec §1.7, §9.1).
+**Why.** The text result format is the type's output function, exactly what
+pgoutput sends. A `::text` cast is not always the output function:
+`true::text` is `'true'` while `boolout` gives `'t'`, so every boolean column
+would conflict.
+
+## 2026-10-30 — Parameters are bound as text and cast twice
+
+**What.** Values are bound as `$n::text::<type>`; keys are matched with
+`(pk...) IN (SELECT * FROM unnest($1::text[]::<type>[], ...))` (the same form
+for single and composite keys).
+**Why.** Binding as `text` lets Postgres apply the type's input function to
+the exact text representation, for every type including enums, domains and
+arrays, without pgx having to encode Go strings into each binary format.
+
+## 2026-10-30 — Merge engine details
+
+- A row whose resolved target equals main's current row is a no-op, not an
+  UPDATE (for example "branch and main made the same change"). UPDATE
+  statements set only the columns that differ from main's row.
+- `stats.skipped` counts rows without an action: no-ops, and conflicts under
+  `SKIP` or `FAIL`. `rows_total = inserted + updated + deleted + skipped`.
+- Under `FAIL` the plan still lists the actions of non-conflicting rows (for
+  display); nothing is applied.
+- The canonical plan (`--out`) contains the branch name, changeset hash,
+  policy, status, stats, actions, conflicts and warnings; no merge id or
+  timestamps, so it is byte-identical across runs.
+- The warning for `ACCEPT` on `INSERT_INSERT` with a sequence-generated key is
+  printed in the plan summary and stored in the plan's `warnings`.
+
+## 2026-10-30 — Merge command behaviour
+
+- The merge id is printed on stdout (like the DSN of `branch create`), so
+  scripts can capture it; the summary goes to stderr. `--json` prints a JSON
+  object instead.
+- Conflicts under `FAIL` exit 5 even with `--dry-run`.
+- Declining the confirmation prompt exits 2, like a missing `--yes` on a
+  non-TTY.
+- An UPDATE that does not affect exactly one row aborts with `RETRY`.
+- A merge with no actions is still applied and recorded in the ledger: the
+  record documents that the branch changed nothing on main.
+
+## 2026-10-30 — Ledger details
+
+- `applied_at` and the tree head timestamp are the same instant, taken after
+  the advisory lock and forced to increase by at least 1 ms over the previous
+  tree head.
+- Each signing key's public key is stored in `pgweir.config` under
+  `ledger_public_keys` (by key id), so `prove` can embed it.
+- Records are stored as `jsonb` and re-canonicalized (RFC 8785) when read.
+- If the stored compact range is missing, of the wrong size or does not
+  reproduce the latest signed root, it is rebuilt from the leaf hashes. If the
+  rebuilt root does not match either, the ledger was altered and the merge is
+  refused rather than signing a tree over altered leaves.
+- `ledger verify-chain` reads the current ledger from main (`--dsn`) and
+  checks that every given signed tree head (a JSON array, or a directory such
+  as an export) verifies with `--pubkey` and is a prefix of the current tree
+  (a consistency proof from each head to the current head). It needs no
+  consistency proofs in the input.
+- `ledger consistency --to` defaults to the latest tree size.
+- `prove` and `ledger` commands print indented JSON.
+- `keygen --out` defaults to `pgweir.key` and never overwrites. Signing keys
+  readable by group or others are refused.
+
+## 2026-10-30 — Export layout
+
+Leaf files cover at most `--segment` leaves and end on segment boundaries;
+the first file of a later export starts at the first leaf not yet exported, so
+a file is never rewritten (for example `00000000-00000036.json`, then
+`00000037-00000999.json`). Exported objects are canonical JSON. An existing
+object with different content is an error. With `--include-changesets`, each
+applied merge's changeset is rebuilt from `pgweir.events` (events up to
+`end_lsn`) and `changeset_tables`, and must reproduce `changeset_hash`.

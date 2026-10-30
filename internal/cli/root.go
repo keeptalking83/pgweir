@@ -5,6 +5,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -53,7 +54,8 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	root.SetOut(stderr)
 	root.SetErr(stderr)
 	err := root.ExecuteContext(ctx)
-	if err != nil {
+	var e *errs.Error
+	if err != nil && !(errors.As(err, &e) && e.Quiet) {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 	}
 	return errs.ExitCode(err)
@@ -90,6 +92,12 @@ each merge in a signed, tamper-evident Merkle ledger.`,
 		newCheckCmd(a),
 		newBranchCmd(a),
 		newDiffCmd(a),
+		newMergeCmd(a),
+		newConflictsCmd(a),
+		newProveCmd(a),
+		newVerifyCmd(a),
+		newLedgerCmd(a),
+		newKeygenCmd(a),
 		newVersionCmd(a),
 	)
 	return root

@@ -49,6 +49,8 @@ type Error struct {
 	Exit int
 	Msg  string
 	Err  error
+	// Quiet: the command already reported the error on its own.
+	Quiet bool
 }
 
 func (e *Error) Error() string {

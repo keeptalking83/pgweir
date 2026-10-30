@@ -137,7 +137,8 @@ type state struct {
 	log     *slog.Logger
 	opts    Options
 	lastSeq int64
-	flushed pglogrepl.LSN
+	flushed pglogrepl.LSN // last persisted commit
+	acked   pglogrepl.LSN // highest position acknowledged to the slot
 	res     *Result
 }
 
@@ -239,10 +240,12 @@ func (s *state) loop(dec *Decoder, target pglogrepl.LSN) error {
 	}
 
 	// Every transaction that committed before the last keepalive position
-	// has been delivered and persisted; recording that position lets the
-	// server recycle WAL the slot no longer needs.
+	// has been delivered and persisted, so acknowledging that position lets
+	// the server recycle WAL the slot no longer needs. flushed_lsn (and so a
+	// merge's end_lsn) stays at the last captured commit, which keeps the
+	// changeset identical across runs while the branch is idle.
 	if reached > s.flushed {
-		if err := s.advance(reached); err != nil {
+		if err := s.ack(reached); err != nil {
 			return err
 		}
 	}
@@ -251,10 +254,11 @@ func (s *state) loop(dec *Decoder, target pglogrepl.LSN) error {
 }
 
 func (s *state) sendStatus(reply bool) error {
+	pos := max(s.flushed, s.acked)
 	err := pglogrepl.SendStandbyStatusUpdate(s.ctx, s.repl, pglogrepl.StandbyStatusUpdate{
-		WALWritePosition: s.flushed,
-		WALFlushPosition: s.flushed,
-		WALApplyPosition: s.flushed,
+		WALWritePosition: pos,
+		WALFlushPosition: pos,
+		WALApplyPosition: pos,
 		ReplyRequested:   reply,
 	})
 	if err != nil {
@@ -312,13 +316,9 @@ FROM jsonb_array_elements($4::jsonb) AS e`, s.branch.ID, int64(txn.Xid), txn.Com
 	return s.sendStatus(false)
 }
 
-func (s *state) advance(lsn pglogrepl.LSN) error {
-	_, err := s.main.Exec(s.ctx, "UPDATE pgweir.capture_progress SET flushed_lsn = $2::pg_lsn WHERE branch_id = $1::uuid AND flushed_lsn < $2::pg_lsn",
-		s.branch.ID, lsn.String())
-	if err != nil {
-		return fmt.Errorf("persist capture progress: %w", err)
-	}
-	s.flushed = lsn
+// ack acknowledges lsn to the slot without changing flushed_lsn.
+func (s *state) ack(lsn pglogrepl.LSN) error {
+	s.acked = lsn
 	return s.sendStatus(false)
 }
 
