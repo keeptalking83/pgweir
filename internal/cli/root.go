@@ -55,7 +55,8 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	root.SetErr(stderr)
 	err := root.ExecuteContext(ctx)
 	var e *errs.Error
-	if err != nil && !(errors.As(err, &e) && e.Quiet) {
+	quiet := errors.As(err, &e) && e.Quiet
+	if err != nil && !quiet {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 	}
 	return errs.ExitCode(err)

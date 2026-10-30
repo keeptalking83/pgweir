@@ -46,7 +46,7 @@ func Create(ctx context.Context, mainDSN string, opts CreateOptions) (*Branch, e
 	}
 
 	// No connection to main is open while forking (local provider).
-	log.Info("forking main", "provider", opts.Provider.Name())
+	log.Debug("forking main", "provider", opts.Provider.Name())
 	branchDSN, ref, err := opts.Provider.Fork(ctx, mainDSN, opts.Name)
 	if err != nil {
 		return nil, err

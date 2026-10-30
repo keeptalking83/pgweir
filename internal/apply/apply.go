@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"strings"
 
@@ -48,7 +47,6 @@ type Merge struct {
 // Options configure Apply.
 type Options struct {
 	Recorder Recorder
-	Log      *slog.Logger
 	// AfterVerify runs inside the transaction after the FOR UPDATE
 	// re-verification. Tests use it to race a concurrent writer.
 	AfterVerify func(ctx context.Context) error
@@ -120,10 +118,6 @@ func MarkFinished(ctx context.Context, q pg.Querier, mergeID, status string) err
 // Apply runs the apply transaction on main (spec §10 step 8). On any error
 // the transaction is rolled back; the caller marks the merge ABORTED.
 func Apply(ctx context.Context, conn *pgx.Conn, tables []*schema.Table, m *Merge, opts Options) (*Result, error) {
-	log := opts.Log
-	if log == nil {
-		log = slog.New(slog.DiscardHandler)
-	}
 	if opts.Recorder == nil {
 		return nil, errs.New(errs.NoSigningKey, "no ledger signer configured")
 	}

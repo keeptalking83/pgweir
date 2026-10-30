@@ -112,7 +112,7 @@ func (n *Neon) Fork(ctx context.Context, mainDSN, name string) (string, map[stri
 	}
 	ep := created.Endpoints[0]
 	ref["endpoint_id"] = ep.ID
-	n.log.Info("created Neon branch, waiting for it to become ready", "branch", created.Branch.ID, "endpoint", ep.ID)
+	n.log.Debug("created Neon branch, waiting for it to become ready", "branch", created.Branch.ID, "endpoint", ep.ID)
 
 	wctx, cancel := context.WithTimeout(ctx, n.timeout)
 	defer cancel()

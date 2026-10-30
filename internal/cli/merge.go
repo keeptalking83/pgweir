@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"strings"
 
@@ -129,7 +130,7 @@ Exit codes: 0 applied or dry run ok, 2 needs confirmation (use --yes),
 					return err
 				}
 			}
-			res, err := apply.Apply(ctx, conn, bc.tables, m, apply.Options{Recorder: signer, Log: a.log, AfterVerify: testHooks.afterVerify})
+			res, err := apply.Apply(ctx, conn, bc.tables, m, apply.Options{Recorder: signer, AfterVerify: testHooks.afterVerify})
 			if err != nil {
 				if markErr := apply.MarkFinished(context.WithoutCancel(ctx), conn, m.ID, "ABORTED"); markErr != nil {
 					a.log.Warn("could not mark merge aborted", "error", markErr)
@@ -174,7 +175,7 @@ func (a *app) confirm(prompt string) (bool, error) {
 	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
 		return false, errs.New(errs.NeedsConfirm, "stdin is not a terminal: pass --yes to apply")
 	}
-	a.stderr.Write([]byte(prompt)) //nolint:errcheck // best effort prompt
+	_, _ = io.WriteString(a.stderr, prompt)
 	line, err := bufio.NewReader(f).ReadString('\n')
 	if err != nil && line == "" {
 		return false, nil

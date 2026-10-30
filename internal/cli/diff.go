@@ -4,6 +4,8 @@ package cli
 
 import (
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -91,6 +93,7 @@ func (a *app) printDiff(cs *changeset.Changeset) {
 		}
 		a.say("")
 		a.say("%s  inserted %d  updated %d  deleted %d", g.name, counts["I"], counts["U"], counts["D"])
+		sort.SliceStable(g.changes, func(i, j int) bool { return pkLess(g.changes[i].PK, g.changes[j].PK) })
 		for i, c := range g.changes {
 			if i == diffRowLimit {
 				a.say("  ... %d more", len(g.changes)-diffRowLimit)
@@ -101,6 +104,24 @@ func (a *app) printDiff(cs *changeset.Changeset) {
 	}
 }
 
+// pkLess orders keys for display: column by column, numerically when both
+// values are integers. The canonical changeset keeps its own order.
+func pkLess(a, b changeset.Row) bool {
+	for _, col := range a.Columns() {
+		x, y := rawValue(a[col]), rawValue(b[col])
+		if x == y {
+			continue
+		}
+		xi, errX := strconv.ParseInt(x, 10, 64)
+		yi, errY := strconv.ParseInt(y, 10, 64)
+		if errX == nil && errY == nil {
+			return xi < yi
+		}
+		return x < y
+	}
+	return false
+}
+
 func formatPK(pk changeset.Row) string {
 	cols := pk.Columns()
 	parts := make([]string, len(cols))
@@ -108,6 +129,13 @@ func formatPK(pk changeset.Row) string {
 		parts[i] = c + "=" + formatValue(pk[c])
 	}
 	return strings.Join(parts, ",")
+}
+
+func rawValue(v *string) string {
+	if v == nil {
+		return "NULL"
+	}
+	return *v
 }
 
 func formatValue(v *string) string {

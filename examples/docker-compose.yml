@@ -1,0 +1,21 @@
+# One Postgres 16 with logical decoding enabled and the demo shop seeded.
+# Start:  docker compose -f examples/docker-compose.yml up -d --wait
+# Reset:  docker compose -f examples/docker-compose.yml down -v
+services:
+  postgres:
+    image: postgres:16
+    command: postgres -c wal_level=logical -c max_replication_slots=10 -c max_wal_senders=10
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: shop
+    ports:
+      - "55432:5432"
+    volumes:
+      - ./seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+    healthcheck:
+      # TCP, so the check fails while the entrypoint's init-only server runs.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d shop"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
