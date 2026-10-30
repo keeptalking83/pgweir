@@ -4,6 +4,11 @@
 -- application role on a managed Postgres.
 CREATE ROLE app LOGIN PASSWORD 'app' REPLICATION CREATEDB;
 ALTER DATABASE shop OWNER TO app;
+
+-- The agent's own role. It gets no privileges on main; grant_agent.sql gives
+-- it privileges on a fork after "pgweir branch create".
+CREATE ROLE agent LOGIN PASSWORD 'agent';
+
 SET ROLE app;
 
 CREATE TABLE customers (

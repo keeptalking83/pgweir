@@ -79,9 +79,9 @@ signing key can rewrite history undetected.
 The connection string printed by `branch create` uses **pgweir's own role**:
 the owner of the tracked tables, with `REPLICATION`. With the `local`
 provider the fork lives on main's server, and with `neon` the fork keeps the
-role's password, so these credentials may also open main. The quickstart
-hands them to a simulated agent for brevity; do not do that with an agent you
-do not trust.
+role's password, so these credentials may also open main. Do not hand them
+to an agent; the quickstart shows the alternative below with
+`examples/seed.sql` (the role) and `examples/grant_agent.sql` (the grants).
 
 Give the agent its own role, with privileges **on the fork only**, granted
 after `branch create`:

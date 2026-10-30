@@ -65,7 +65,8 @@ captured by scripts: DSN=$(pgweir branch create demo --provider local)`,
 				})
 			}
 			a.emit("%s", b.DSN)
-			a.say("created branch %q (provider %s, base LSN %s); give the connection string above to the agent", b.Name, b.Provider, b.BaseLSN)
+			a.say("created branch %q (provider %s, base LSN %s)", b.Name, b.Provider, b.BaseLSN)
+			a.say("the connection string above uses pgweir's own role; give agents a role of their own (SECURITY.md)")
 			return nil
 		},
 	}

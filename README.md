@@ -3,10 +3,12 @@
 [![ci](https://github.com/keeptalking83/pgweir/actions/workflows/ci.yml/badge.svg)](https://github.com/keeptalking83/pgweir/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-**pgweir lets an AI agent write to a branch of your Postgres database, then
-merges the rows it changed back into main with a three-way merge, under a
-conflict policy you choose, and records every merge in a signed,
-tamper-evident ledger.**
+**A controlled write-and-merge layer between AI agents and your production
+Postgres.**
+
+pgweir lets an agent write to a branch (a fork of your database), merges the
+rows it changed back into main with a three-way merge under a conflict policy
+you choose, and records every merge in a signed, tamper-evident ledger.
 
 ![pgweir demo: branch, agent writes, conflicting edit on main, diff, merge with fail then skip, prove and verify](docs/demo.gif)
 
@@ -23,8 +25,8 @@ back is not: main kept moving while the agent worked.
 
 pgweir closes that loop:
 
-1. **Fork.** `pgweir branch create` forks main and hands the agent a connection
-   string.
+1. **Fork.** `pgweir branch create` forks main. The agent connects to the fork
+   with a role of its own and never touches main.
 2. **Capture.** Every row the agent changes is read from the branch's
    write-ahead log through logical replication, with the agent run that made
    it.
@@ -50,7 +52,8 @@ cd examples
 
 The container is Postgres 16 with `wal_level = logical` and a small shop:
 100 customers and 1,000 orders, owned by the role `app`, which is not a
-superuser.
+superuser. pgweir runs as `app`. The agent gets a role of its own, `agent`,
+which has no privileges on main.
 
 ```sh
 export PGWEIR_MAIN_DSN='postgres://app:app@localhost:55432/shop?sslmode=disable'
@@ -62,11 +65,27 @@ pgweir keygen --out pgweir.key > pgweir.pub
 DSN=$(pgweir branch create demo --provider local)
 ```
 
-The agent now works on the branch: it ships 20 orders, creates 5, and deletes
-2, in three tagged transactions. Meanwhile someone edits main.
+`$DSN` uses pgweir's own role. Give the agent privileges on the fork only,
+and its own connection string:
 
 ```sh
-python3 agent_demo.py "$DSN"
+psql "$DSN" -q -f grant_agent.sql                                            # grants exist on the fork only
+AGENT_DSN="postgres://agent:agent@localhost:55432/pw_demo?sslmode=disable"   # the fork is database pw_demo
+```
+
+The agent now works on the branch: it ships 20 orders, creates 5, and deletes
+2, in three tagged transactions. With the same role, main is out of reach:
+
+```console
+$ python3 agent_demo.py "$AGENT_DSN"
+agent run_4c9047f3: shipped 20, created 5, removed 2 orders
+$ psql "postgres://agent:agent@localhost:55432/shop?sslmode=disable" -c "UPDATE orders SET status = 'HACKED'"
+ERROR:  permission denied for table orders
+```
+
+Meanwhile someone edits main:
+
+```sh
 psql "$MAIN" -c "UPDATE orders SET note = 'touched on main' WHERE id = 5"    # another column than the agent's: merges cleanly
 psql "$MAIN" -c "UPDATE orders SET status = 'CANCELLED' WHERE id = 7"       # the column the agent changed: conflict
 ```
@@ -279,10 +298,10 @@ prefer UUID keys where main and agents both insert.
 
 Main is the trusted store: it holds branch connection strings and the ledger.
 The connection string `branch create` prints uses pgweir's own role, which
-can also reach main; the quickstart gives it to the simulated agent for
-brevity. Give a real agent its own role with plain DML privileges on the fork
-only. The threat model, key handling and agent isolation are described in
-[SECURITY.md](SECURITY.md).
+can also reach main. Give agents a role of their own with privileges on the
+fork only, as the quickstart does with
+[`examples/grant_agent.sql`](examples/grant_agent.sql). The threat model, key
+handling and agent isolation are described in [SECURITY.md](SECURITY.md).
 
 ## Status
 

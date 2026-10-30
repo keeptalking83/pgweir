@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # End-to-end pgweir demo, the same commands as the README quickstart:
-# branch -> agent writes -> concurrent writes on main -> diff ->
-# merge --policy fail (conflict) -> merge --policy skip -> prove -> verify.
+# branch -> agent writes with its own role (denied on main) -> concurrent
+# writes on main -> diff -> merge --policy fail (conflict) ->
+# merge --policy skip -> prove -> verify.
 #
 # Needs a fresh database: docker compose -f examples/docker-compose.yml up -d --wait
 # (reset with "down -v"), pgweir on PATH, psql, and Python 3 with psycopg 3.
@@ -29,7 +30,19 @@ run() {
 run 'pgweir init --tables "public.customers,public.orders"'
 run 'pgweir keygen --out pgweir.key > pgweir.pub'
 run 'DSN=$(pgweir branch create demo --provider local)'
-run 'python3 agent_demo.py "$DSN"'
+run 'psql "$DSN" -q -f grant_agent.sql'                                                 # agent role: privileges on the fork only
+run 'AGENT_DSN="postgres://agent:agent@localhost:55432/pw_demo?sslmode=disable"'        # the fork is database pw_demo
+run 'python3 agent_demo.py "$AGENT_DSN"'
+
+set +e
+run 'psql "postgres://agent:agent@localhost:55432/shop?sslmode=disable" -c "UPDATE orders SET status = '"'HACKED'"'"'   # same role on main: denied
+code=$?
+set -e
+if [ "$code" -eq 0 ]; then
+  echo "the agent role must not be able to write to main" >&2
+  exit 1
+fi
+
 run 'psql "$MAIN" -c "UPDATE orders SET note = '"'touched on main'"' WHERE id = 5"'    # disjoint cell: merges cleanly
 run 'psql "$MAIN" -c "UPDATE orders SET status = '"'CANCELLED'"' WHERE id = 7"'       # same cell: CELL_CONFLICT
 run 'pgweir diff demo'
