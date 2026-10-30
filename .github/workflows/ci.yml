@@ -38,7 +38,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        postgres: ["14", "15", "16", "17"]
+        postgres: ["14", "15", "16", "17", "18"]
     env:
       PGWEIR_TEST_PG_IMAGE: postgres:${{ matrix.postgres }}
     steps:

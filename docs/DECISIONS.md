@@ -211,3 +211,38 @@ a file is never rewritten (for example `00000000-00000036.json`, then
 object with different content is an error. With `--include-changesets`, each
 applied merge's changeset is rebuilt from `pgweir.events` (events up to
 `end_lsn`) and `changeset_tables`, and must reproduce `changeset_hash`.
+
+## 2026-10-30 — Neon provider
+
+**What.** Neon API v2 as verified on 2026-10-30 (paths, payloads and sources
+in `docs/providers.md`). The fork is a Neon branch named `pw_<name>` with one
+`read_write` endpoint; pgweir waits for the create operations to finish, asks
+for a direct (`pooled=false`) connection URI for main's role and database, and
+retries connecting until the compute accepts connections. Requests answered
+with 423, 429 or 503 are retried with exponential backoff. When main's host is
+a Neon endpoint (`ep-...`), the parent branch must be that endpoint's branch,
+otherwise `branch create` fails and names the right `--parent`.
+`PGWEIR_NEON_API_URL` overrides the API base URL (tests, proxies).
+**Why.** Forking the default branch while main lives on another branch would
+silently merge against the wrong base. Replication connections cannot go
+through Neon's pooler.
+**Rejected.** Disabling scale-to-zero on the fork (`suspend_timeout_seconds`):
+not allowed on every plan; Neon keeps inactive slots for about 40 hours, which
+is documented as the capture deadline instead.
+
+## 2026-10-30 — S3 export and its tests
+
+**What.** The S3 sink reads an object before writing it and writes with
+`If-None-Match: *`; an existing object is compared byte for byte. When
+`AWS_ENDPOINT_URL_S3` or `AWS_ENDPOINT_URL` is set, requests are path-style.
+The sink is tested against an in-process fake S3 server, not MinIO.
+**Why.** The read-before-write protects stores that ignore conditional
+writes. MinIO no longer publishes container images (Docker Hub and quay.io
+pulls fail as of 2026-10-30), and the specification forbids tests that need
+the network for anything but the Postgres image.
+
+## 2026-10-30 — Postgres 18 in the CI matrix
+
+**What.** The integration matrix runs Postgres 14, 15, 16, 17 and 18.
+**Why.** Postgres 18 is the current release and the whole suite passes on it.
+The specification's minimum (14) is unchanged.
