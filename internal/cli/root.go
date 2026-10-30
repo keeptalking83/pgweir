@@ -86,6 +86,10 @@ each merge in a signed, tamper-evident Merkle ledger.`,
 	pf.BoolVar(&a.cfg.JSON, "json", false, "machine-readable JSON output on stdout")
 
 	root.AddCommand(
+		newInitCmd(a),
+		newCheckCmd(a),
+		newBranchCmd(a),
+		newDiffCmd(a),
 		newVersionCmd(a),
 	)
 	return root
