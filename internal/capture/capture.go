@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pglogrepl"
@@ -87,6 +88,23 @@ func Run(ctx context.Context, mainConn *pgx.Conn, b *branch.Branch, tables []*sc
 		return res, err
 	}
 	res.TargetLSN = target
+
+	// Main and branch must still agree on every tracked table: events
+	// captured earlier are merged against main's current definition.
+	refs := make([]schema.Ref, len(tables))
+	for i, t := range tables {
+		refs[i] = t.Ref
+	}
+	branchTables, err := schema.Load(ctx, branchConn, refs)
+	if err != nil {
+		return res, errs.Wrap(errs.SchemaDrift, err, "tracked table missing on branch %q", b.Name)
+	}
+	for i, mt := range tables {
+		if d := schema.Drift(mt, branchTables[i]); len(d) > 0 {
+			return res, errs.New(errs.SchemaDrift, "table %s differs between main and branch %q (schema changes are never merged):\n  - %s",
+				mt, b.Name, strings.Join(d, "\n  - "))
+		}
+	}
 
 	resolver := typeResolver(ctx, branchConn)
 	dec := NewDecoder(tables, resolver)
@@ -228,6 +246,7 @@ func (s *state) loop(dec *Decoder, target pglogrepl.LSN) error {
 				if err := s.persist(txn); err != nil {
 					return err
 				}
+				lastServerMsg = time.Now() // persisting is our own work, not server silence
 				if txn.CommitLSN >= target {
 					commitReached = true
 				}
@@ -286,6 +305,13 @@ func (s *state) persist(txn *Txn) error {
 		payload, err := json.Marshal(batch)
 		if err != nil {
 			return err
+		}
+		if start > 0 {
+			// Keep the walsender alive (wal_sender_timeout) while a large
+			// transaction is stored; this acknowledges nothing new.
+			if err := s.sendStatus(false); err != nil {
+				return err
+			}
 		}
 		_, err = tx.Exec(s.ctx, `
 INSERT INTO pgweir.events (branch_id, seq, xid, commit_lsn, op, table_schema, table_name, pk, old_row, new_row, run)

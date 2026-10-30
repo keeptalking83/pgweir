@@ -11,11 +11,12 @@ import (
 	"github.com/keeptalking83/pgweir/internal/schema"
 )
 
-// LoadEvents reads the captured events of a branch in seq order.
-func LoadEvents(ctx context.Context, q pg.Querier, branchID string) ([]Event, error) {
+// LoadEvents reads the captured events of a branch with commit LSN up to
+// endLSN, in seq order.
+func LoadEvents(ctx context.Context, q pg.Querier, branchID, endLSN string) ([]Event, error) {
 	rows, err := q.Query(ctx, `
 SELECT seq, xid, commit_lsn::text, op, table_schema, table_name, pk, old_row, new_row, run
-FROM pgweir.events WHERE branch_id = $1::uuid ORDER BY seq`, branchID)
+FROM pgweir.events WHERE branch_id = $1::uuid AND commit_lsn <= $2::pg_lsn ORDER BY seq`, branchID, endLSN)
 	if err != nil {
 		return nil, fmt.Errorf("read events: %w", err)
 	}

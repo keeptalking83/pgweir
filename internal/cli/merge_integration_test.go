@@ -306,8 +306,11 @@ func TestConcurrentMergesAndLedger(t *testing.T) {
 	if r := pgweir(t, "verify", "--proof", proof, "--pubkey", pub); r.code != 1 {
 		t.Fatalf("tampered record verified: %s", r.stdout)
 	}
-	if r := pgweir(t, "ledger", "export", "--dsn", main, "--dir", t.TempDir()); r.code != 0 {
-		t.Fatalf("export to a fresh directory: %s", r.stderr)
+	if r := pgweir(t, "ledger", "verify-chain", "--dsn", main, "--sths", exp, "--pubkey", pub); r.code != 1 || !strings.Contains(r.stdout, "does not match its leaf hash") {
+		t.Fatalf("verify-chain accepted an altered record: %s", r.stdout)
+	}
+	if r := pgweir(t, "ledger", "export", "--dsn", main, "--dir", t.TempDir()); r.code == 0 || !strings.Contains(r.stderr, "does not match its leaf hash") {
+		t.Fatalf("export of an altered record: exit %d %s", r.code, r.stderr)
 	}
 
 	// Tamper with a leaf hash: verify-chain against the exported tree heads

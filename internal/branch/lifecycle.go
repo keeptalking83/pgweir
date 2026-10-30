@@ -68,6 +68,9 @@ func Create(ctx context.Context, mainDSN string, opts CreateOptions) (*Branch, e
 		return cause
 	}
 
+	if err := ensureNotMain(ctx, mainDSN, branchDSN); err != nil {
+		return nil, cleanup(err)
+	}
 	if err := prepareBranch(ctx, branchDSN, cfg, mainTables); err != nil {
 		return nil, cleanup(err)
 	}
@@ -100,17 +103,54 @@ func prepare(ctx context.Context, mainDSN, name string) (*Config, []*schema.Tabl
 		return nil, nil, err
 	}
 	var exists bool
-	if err := conn.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pgweir.branches WHERE name = $1)", name).Scan(&exists); err != nil {
+	if err := conn.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pgweir.branches WHERE name = $1 AND status <> 'DROPPED')", name).Scan(&exists); err != nil {
 		return nil, nil, err
 	}
 	if exists {
-		return nil, nil, errs.New(errs.InvalidArgument, "branch %q already exists (drop it first; names are unique)", name)
+		return nil, nil, errs.New(errs.InvalidArgument, "branch %q already exists; drop it first or choose another name", name)
 	}
 	tables, err := schema.Load(ctx, conn, cfg.Refs())
 	if err != nil {
 		return nil, nil, err
 	}
 	return cfg, tables, nil
+}
+
+// ensureNotMain writes a random marker to main after the fork exists and
+// checks that the fork does not see it. A fork made earlier cannot; main
+// itself (a mistaken --branch-dsn) or a replica of main can.
+func ensureNotMain(ctx context.Context, mainDSN, branchDSN string) error {
+	marker := NewID()
+	mainConn, err := pg.Connect(ctx, mainDSN)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = mainConn.Close(context.WithoutCancel(ctx)) }()
+	if _, err := mainConn.Exec(ctx, "INSERT INTO pgweir.config (key, value) VALUES ('fork_probe:' || $1, 'true')", marker); err != nil {
+		return fmt.Errorf("write fork probe on main: %w", err)
+	}
+	defer func() {
+		_, _ = mainConn.Exec(context.WithoutCancel(ctx), "DELETE FROM pgweir.config WHERE key = 'fork_probe:' || $1", marker)
+	}()
+	branchConn, err := pg.Connect(ctx, branchDSN)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = branchConn.Close(context.WithoutCancel(ctx)) }()
+	var seen bool
+	err = branchConn.QueryRow(ctx, `SELECT pg_catalog.to_regclass('pgweir.config') IS NOT NULL
+  AND EXISTS (SELECT 1 FROM pgweir.config WHERE key = 'fork_probe:' || $1)`, marker).Scan(&seen)
+	if err != nil {
+		// Without the pgweir schema the fork cannot be main; prepareBranch reports it.
+		if pg.HasSQLState(err, pg.UndefinedTable) {
+			return nil
+		}
+		return fmt.Errorf("read fork probe on the branch: %w", err)
+	}
+	if seen {
+		return errs.New(errs.InvalidArgument, "the branch connection string reaches main itself (or a replica of main), not a fork")
+	}
+	return nil
 }
 
 // prepareBranch verifies the fork and sets it up for capture (spec §6 steps 3-4).

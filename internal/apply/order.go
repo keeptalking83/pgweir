@@ -10,57 +10,118 @@ import (
 )
 
 // TableOrder returns the tables in topological order of their foreign keys:
-// referenced tables before referencing ones. Ties, and the members of an FK
-// cycle (including self-references), are ordered by (schema, name).
+// referenced tables before referencing ones. Tables in a foreign-key cycle
+// (including self-references) form one strongly connected component, which
+// is placed as a unit once every table it references outside the cycle is
+// placed; inside a component, and between components that are ready at the
+// same time, tables are ordered by (schema, name).
 func TableOrder(tables []schema.Ref, edges []schema.FKEdge) []schema.Ref {
 	sorted := make([]schema.Ref, len(tables))
 	copy(sorted, tables)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Less(sorted[j]) })
-
-	parents := map[schema.Ref]map[schema.Ref]bool{} // child -> parents not yet placed
-	for _, e := range edges {
-		if e.Child == e.Parent {
-			continue
-		}
-		if parents[e.Child] == nil {
-			parents[e.Child] = map[schema.Ref]bool{}
-		}
-		parents[e.Child][e.Parent] = true
+	index := map[schema.Ref]int{}
+	for i, t := range sorted {
+		index[t] = i
 	}
-	placed := map[schema.Ref]bool{}
+	parents := make([][]int, len(sorted)) // child -> referenced tables
+	for _, e := range edges {
+		c, okC := index[e.Child]
+		p, okP := index[e.Parent]
+		if okC && okP {
+			parents[c] = append(parents[c], p)
+		}
+	}
+	comp := components(len(sorted), parents)
+
+	// Component DAG: a component depends on the components it references.
+	n := 0
+	for _, c := range comp {
+		n = max(n, c+1)
+	}
+	deps := make([]map[int]bool, n)
+	members := make([][]int, n)
+	for v := range sorted {
+		members[comp[v]] = append(members[comp[v]], v) // ascending, so sorted by name
+		for _, p := range parents[v] {
+			if comp[p] != comp[v] {
+				if deps[comp[v]] == nil {
+					deps[comp[v]] = map[int]bool{}
+				}
+				deps[comp[v]][comp[p]] = true
+			}
+		}
+	}
+	placed := make([]bool, n)
 	var out []schema.Ref
 	for len(out) < len(sorted) {
-		progress := false
-		for _, t := range sorted {
-			if placed[t] {
+		best := -1
+		for c := 0; c < n; c++ {
+			if placed[c] {
 				continue
 			}
 			ready := true
-			for p := range parents[t] {
-				if !placed[p] {
+			for d := range deps[c] {
+				if !placed[d] {
 					ready = false
 					break
 				}
 			}
-			if ready {
-				placed[t] = true
-				out = append(out, t)
-				progress = true
-				break // restart so that ties keep (schema, name) order
+			if ready && (best < 0 || members[c][0] < members[best][0]) {
+				best = c
 			}
 		}
-		if !progress {
-			// Cycle: place the first remaining table by name.
-			for _, t := range sorted {
-				if !placed[t] {
-					placed[t] = true
-					out = append(out, t)
-					break
-				}
-			}
+		placed[best] = true
+		for _, v := range members[best] {
+			out = append(out, sorted[v])
 		}
 	}
 	return out
+}
+
+// components labels the strongly connected components of a graph (Tarjan).
+func components(n int, adj [][]int) []int {
+	index := make([]int, n)
+	low := make([]int, n)
+	onStack := make([]bool, n)
+	comp := make([]int, n)
+	for i := range index {
+		index[i] = -1
+	}
+	var stack []int
+	next, count := 0, 0
+	var visit func(v int)
+	visit = func(v int) {
+		index[v], low[v] = next, next
+		next++
+		stack = append(stack, v)
+		onStack[v] = true
+		for _, w := range adj[v] {
+			if index[w] < 0 {
+				visit(w)
+				low[v] = min(low[v], low[w])
+			} else if onStack[w] {
+				low[v] = min(low[v], index[w])
+			}
+		}
+		if low[v] == index[v] {
+			for {
+				w := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				onStack[w] = false
+				comp[w] = count
+				if w == v {
+					break
+				}
+			}
+			count++
+		}
+	}
+	for v := 0; v < n; v++ {
+		if index[v] < 0 {
+			visit(v)
+		}
+	}
+	return comp
 }
 
 // OrderActions orders a plan's actions for execution (spec §10 step 8.3):

@@ -86,8 +86,13 @@ publication are set up on each branch by "branch create".`,
 			if info.VersionNum < pg.MinServerVersion {
 				return errs.New(errs.Prerequisite, "Postgres %s is not supported: version 14 or later is required", info.Version)
 			}
+			if e := info.EncodingProblem(); e != "" {
+				return errs.New(errs.Prerequisite, "%s", e)
+			}
 			for _, p := range info.LogicalDecodingProblems() {
-				a.say("warning: main's server: %s (branches on the same server or Neon project share this configuration)", p)
+				if p != info.EncodingProblem() {
+					a.say("warning: main's server: %s (branches on the same server or Neon project share this configuration)", p)
+				}
 			}
 			tables, err := schema.Load(ctx, conn, refs)
 			if err != nil {

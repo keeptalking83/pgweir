@@ -139,6 +139,9 @@ const (
 	UniqueViolation       = "23505"
 	ObjectInUse           = "55006"
 	UndefinedObject       = "42704"
+	UndefinedTable        = "42P01"
+	DeadlockDetected      = "40P01"
+	LockNotAvailable      = "55P03"
 	DuplicateObject       = "42710"
 	InsufficientPrivilege = "42501"
 )

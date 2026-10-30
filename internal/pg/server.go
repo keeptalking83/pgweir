@@ -28,6 +28,7 @@ type ServerInfo struct {
 	Database            string
 	OwnsDatabase        bool
 	CanCreateInDB       bool
+	Encoding            string
 }
 
 // Server reads ServerInfo from the connected server.
@@ -44,12 +45,13 @@ SELECT current_setting('server_version_num'),
        r.rolname, r.rolsuper, r.rolreplication, r.rolcreatedb,
        d.datname,
        pg_catalog.pg_has_role(d.datdba, 'MEMBER'),
-       pg_catalog.has_database_privilege(d.datname, 'CREATE')
+       pg_catalog.has_database_privilege(d.datname, 'CREATE'),
+       current_setting('server_encoding')
 FROM pg_catalog.pg_roles r, pg_catalog.pg_database d
 WHERE r.rolname = current_user AND d.datname = current_database()`).Scan(
 		&versionNum, &s.Version, &s.WALLevel, &slots, &senders, &s.UsedSlots,
 		&s.Role, &s.Superuser, &s.Replication, &s.CreateDB,
-		&s.Database, &s.OwnsDatabase, &s.CanCreateInDB)
+		&s.Database, &s.OwnsDatabase, &s.CanCreateInDB, &s.Encoding)
 	if err != nil {
 		return s, fmt.Errorf("read server settings: %w", err)
 	}
@@ -63,6 +65,16 @@ WHERE r.rolname = current_user AND d.datname = current_database()`).Scan(
 		return s, fmt.Errorf("parse max_wal_senders %q: %w", senders, err)
 	}
 	return s, nil
+}
+
+// EncodingProblem reports a database encoding pgweir cannot handle:
+// SQL_ASCII stores bytes without an encoding, so values are not guaranteed
+// to be valid UTF-8 and would be altered by the JSON row encoding.
+func (s ServerInfo) EncodingProblem() string {
+	if s.Encoding == "SQL_ASCII" {
+		return fmt.Sprintf("database %q uses the SQL_ASCII encoding; pgweir needs a real encoding such as UTF8", s.Database)
+	}
+	return ""
 }
 
 // LogicalDecodingProblems lists the unmet server prerequisites for hosting a
@@ -85,6 +97,9 @@ func (s ServerInfo) LogicalDecodingProblems() []string {
 	}
 	if !s.Replication && !s.Superuser {
 		p = append(p, fmt.Sprintf("role %q lacks the REPLICATION attribute: ALTER ROLE %s REPLICATION", s.Role, Ident(s.Role)))
+	}
+	if e := s.EncodingProblem(); e != "" {
+		p = append(p, e)
 	}
 	if !s.CanCreateInDB {
 		p = append(p, fmt.Sprintf("role %q may not CREATE in database %q (needed for the publication)", s.Role, s.Database))

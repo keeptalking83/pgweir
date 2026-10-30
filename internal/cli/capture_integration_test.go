@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/keeptalking83/pgweir/internal/branch"
 	"github.com/keeptalking83/pgweir/internal/capture"
@@ -212,10 +213,10 @@ func TestBranchListAndDrop(t *testing.T) {
 	if !strings.Contains(r.stdout, "dropme") || !strings.Contains(r.stdout, "OPEN") {
 		t.Fatalf("branch list:\n%s", r.stdout)
 	}
+	// Not captured yet: drop must drain the slot and notice the change.
 	pgtest.Exec(t, dsn, "UPDATE orders SET status = 'X' WHERE id = 1")
-	mustPgweir(t, "diff", "dropme", "--dsn", main, "--idle-timeout", "300ms")
-	if r := pgweir(t, "branch", "drop", "dropme", "--dsn", main); r.code == 0 {
-		t.Fatal("drop of a branch with unmerged events must be refused")
+	if r := pgweir(t, "branch", "drop", "dropme", "--dsn", main, "--idle-timeout", "300ms"); r.code == 0 {
+		t.Fatal("drop of a branch with unmerged changes must be refused")
 	}
 	mustPgweir(t, "branch", "drop", "dropme", "--dsn", main, "--force")
 	if got := pgtest.Query(t, srv.AdminDSN("postgres"), "SELECT count(*)::text FROM pg_database WHERE datname = $1", db); got != "0" {
@@ -223,6 +224,59 @@ func TestBranchListAndDrop(t *testing.T) {
 	}
 	if r := pgweir(t, "diff", "dropme", "--dsn", main); r.code == 0 || !strings.Contains(r.stderr, "DROPPED") {
 		t.Fatalf("diff of a dropped branch must fail:\n%s", r.stderr)
+	}
+	// The name of a dropped branch can be used again.
+	again := createBranch(t, main, "dropme")
+	pgtest.Exec(t, again, "UPDATE orders SET status = 'Y' WHERE id = 2")
+	cs := diffJSON(t, main, "dropme")
+	if len(cs.Rows) != 1 || val(cs.Rows[0].Final, "status") != "Y" {
+		t.Fatalf("recreated branch changeset: %+v", cs.Rows)
+	}
+	mustPgweir(t, "branch", "drop", "dropme", "--dsn", main, "--force")
+}
+
+func TestMainSchemaChangeAfterCapture(t *testing.T) {
+	main := setup(t, "")
+	dsn := createBranch(t, main, "mainddl")
+	pgtest.Exec(t, dsn, "UPDATE orders SET status = 'X' WHERE id = 1; DELETE FROM orders WHERE id = 2;")
+	mustPgweir(t, "diff", "mainddl", "--dsn", main, "--idle-timeout", "300ms")
+	pgtest.Exec(t, main, "ALTER TABLE orders ADD COLUMN priority int")
+	r := pgweir(t, "merge", "mainddl", "--dsn", main, "--policy", "skip", "--dry-run", "--idle-timeout", "300ms")
+	if r.code == 0 || !strings.Contains(r.stderr, "SCHEMA_DRIFT") {
+		t.Fatalf("expected SCHEMA_DRIFT, got exit %d:\n%s", r.code, r.stderr)
+	}
+}
+
+func TestManualBranchCannotBeMain(t *testing.T) {
+	main := setup(t, "")
+	r := pgweir(t, "branch", "create", "self", "--dsn", main, "--provider", "manual", "--branch-dsn", main)
+	if r.code == 0 || !strings.Contains(r.stderr, "reaches main itself") {
+		t.Fatalf("expected refusal, got exit %d:\n%s", r.code, r.stderr)
+	}
+	if got := pgtest.Query(t, main, "SELECT relreplident::text FROM pg_class WHERE oid = 'orders'::regclass"); got != "d" {
+		t.Fatalf("replica identity on main changed to %q", got)
+	}
+	if got := pgtest.Query(t, main, "SELECT (SELECT count(*) FROM pg_publication) + (SELECT count(*) FROM pg_replication_slots WHERE database = current_database())"); got != "0" {
+		t.Fatalf("publication or slot created on main: %s", got)
+	}
+}
+
+func TestTagRejectsMalformedTags(t *testing.T) {
+	main := setup(t, "")
+	dsn := createBranch(t, main, "badtag")
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	for _, tag := range []string{`[1]`, `{"x":1}`, `{"run_id":""}`, `{"run_id":7}`, `{"run_id":"r","n":1e309}`} {
+		if _, err := conn.Exec(ctx, "SELECT pgweir.tag($1::jsonb)", tag); err == nil || !strings.Contains(err.Error(), "pgweir.tag()") {
+			t.Errorf("tag %s: expected rejection, got %v", tag, err)
+		}
+	}
+	if _, err := conn.Exec(ctx, `SELECT pgweir.tag('{"run_id":"ok","n":12.5,"nested":{"k":[1,2]}}')`); err != nil {
+		t.Fatalf("valid tag rejected: %v", err)
 	}
 }
 

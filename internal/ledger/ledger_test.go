@@ -195,23 +195,35 @@ func TestVerifyChain(t *testing.T) {
 	for size := uint64(1); size <= 50; size++ {
 		heads = append(heads, signedHead(t, tree, size, key))
 	}
-	if err := VerifyChain(heads, pub, tree); err != nil {
+	if err := VerifyChain(heads, []ed25519.PublicKey{pub}, tree); err != nil {
 		t.Fatalf("valid chain rejected: %v", err)
+	}
+	// Key rotation: later heads signed by a second key verify with both keys.
+	_, key2, _ := ed25519.GenerateKey(nil)
+	rotated := append([]SignedSTH{}, heads[:25]...)
+	for size := uint64(26); size <= 50; size++ {
+		rotated = append(rotated, signedHead(t, tree, size, key2))
+	}
+	if err := VerifyChain(rotated, []ed25519.PublicKey{pub, key2.Public().(ed25519.PublicKey)}, tree); err != nil {
+		t.Fatalf("rotated chain rejected: %v", err)
+	}
+	if err := VerifyChain(rotated, []ed25519.PublicKey{pub}, tree); err == nil {
+		t.Fatal("rotated chain accepted without the second key")
 	}
 	// History rewritten: leaf 10 replaced, later heads re-signed.
 	leaves := randomLeaves(50)
 	leaves[10] = hasher.HashLeaf([]byte("rewritten"))
-	if err := VerifyChain(heads, pub, NewTree(leaves)); err == nil {
+	if err := VerifyChain(heads, []ed25519.PublicKey{pub}, NewTree(leaves)); err == nil {
 		t.Fatal("rewritten history accepted")
 	}
 	// Truncated ledger.
-	if err := VerifyChain(heads, pub, NewTree(randomLeaves(40))); err == nil {
+	if err := VerifyChain(heads, []ed25519.PublicKey{pub}, NewTree(randomLeaves(40))); err == nil {
 		t.Fatal("truncated ledger accepted")
 	}
 	// Forged head.
 	forged := heads[20]
 	forged.STH.RootHash = hex.EncodeToString(make([]byte, 32))
-	if err := VerifyChain(append(heads[:0:0], forged), pub, tree); err == nil {
+	if err := VerifyChain(append(heads[:0:0], forged), []ed25519.PublicKey{pub}, tree); err == nil {
 		t.Fatal("forged head accepted")
 	}
 }

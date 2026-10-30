@@ -175,7 +175,12 @@ func (n *Neon) resolveParent(ctx context.Context, mainHost string) (string, erro
 		var ep struct {
 			Endpoint neonEndpoint `json:"endpoint"`
 		}
-		if err := n.do(ctx, http.MethodGet, n.projectPath("/endpoints/"+url.PathEscape(epID)), nil, &ep); err == nil && ep.Endpoint.BranchID != "" && ep.Endpoint.BranchID != parent.ID {
+		// Fail closed: forking another branch than main's would merge
+		// against the wrong base.
+		if err := n.do(ctx, http.MethodGet, n.projectPath("/endpoints/"+url.PathEscape(epID)), nil, &ep); err != nil {
+			return "", fmt.Errorf("look up main's endpoint %s in project %s (is NEON_PROJECT_ID main's project?): %w", epID, n.projectID, err)
+		}
+		if ep.Endpoint.BranchID != parent.ID {
 			return "", fmt.Errorf("main (%s) is on Neon branch %s, not on %s (%s); pass --parent %s",
 				mainHost, ep.Endpoint.BranchID, parent.ID, parent.Name, ep.Endpoint.BranchID)
 		}

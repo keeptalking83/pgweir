@@ -7,11 +7,13 @@ package apply
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/keeptalking83/pgweir/internal/changeset"
+	"github.com/keeptalking83/pgweir/internal/errs"
 	"github.com/keeptalking83/pgweir/internal/merge"
 	"github.com/keeptalking83/pgweir/internal/pg"
 	"github.com/keeptalking83/pgweir/internal/schema"
@@ -125,8 +127,39 @@ func SequenceKeys(ctx context.Context, q pg.Querier, tables []*schema.Table) (ma
 	return out, nil
 }
 
+// CheckColumns verifies that every captured row has exactly the columns of
+// main's current table: a schema change after capture is drift.
+func CheckColumns(tables []*schema.Table, rows []changeset.RowChange) error {
+	want := map[schema.Ref]string{}
+	for _, t := range tables {
+		names := make([]string, len(t.Columns))
+		for i, c := range t.Columns {
+			names[i] = c.Name
+		}
+		sort.Strings(names)
+		want[t.Ref] = strings.Join(names, ",")
+	}
+	for _, rc := range rows {
+		ref := schema.Ref{Schema: rc.Schema, Name: rc.Table}
+		w, ok := want[ref]
+		if !ok {
+			return errs.New(errs.UntrackedTable, "captured change to %s, which is no longer tracked", ref)
+		}
+		for _, r := range []changeset.Row{rc.Base, rc.Final} {
+			if r != nil && strings.Join(r.Columns(), ",") != w {
+				return errs.New(errs.SchemaDrift, "table %s changed on main after the branch's changes were captured (columns now %s, captured %s)",
+					ref, w, strings.Join(r.Columns(), ","))
+			}
+		}
+	}
+	return nil
+}
+
 // Compute fetches main's rows and computes the merge plan (spec §10 step 4).
 func Compute(ctx context.Context, q pg.Querier, tables []*schema.Table, cs *changeset.Changeset, policy merge.Policy) (merge.Plan, error) {
+	if err := CheckColumns(tables, cs.Changes); err != nil {
+		return merge.Plan{}, err
+	}
 	ours, err := FetchOurs(ctx, q, tables, cs.Changes)
 	if err != nil {
 		return merge.Plan{}, err

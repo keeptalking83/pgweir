@@ -40,6 +40,21 @@ func TestTableOrderCycle(t *testing.T) {
 	}
 }
 
+// A table outside a cycle that references it must come after the cycle.
+func TestTableOrderCycleBeforeDependents(t *testing.T) {
+	tables := []schema.Ref{ref("a"), ref("b"), ref("c")}
+	edges := []schema.FKEdge{
+		{Child: ref("a"), Parent: ref("c")},
+		{Child: ref("b"), Parent: ref("c")},
+		{Child: ref("c"), Parent: ref("b")},
+	}
+	got := TableOrder(tables, edges)
+	want := []schema.Ref{ref("b"), ref("c"), ref("a")}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
 func TestOrderActions(t *testing.T) {
 	order := []schema.Ref{ref("customers"), ref("orders")}
 	act := func(kind merge.ActionKind, table string, first, last int64) merge.Action {

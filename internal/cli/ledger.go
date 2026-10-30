@@ -134,7 +134,7 @@ public key. The public key embedded in the proof is ignored unless
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&proofPath, "proof", "", "proof file written by `prove`")
+	cmd.Flags().StringVar(&proofPath, "proof", "", "proof file written by the prove command")
 	cmd.Flags().StringVar(&pubKey, "pubkey", "", "ed25519 public key: 64 hex characters or a file containing them")
 	cmd.Flags().BoolVar(&trustEmbedded, "trust-embedded", false, "use the public key embedded in the proof when --pubkey is not given")
 	return cmd
@@ -214,24 +214,30 @@ func newLedgerConsistencyCmd(a *app) *cobra.Command {
 }
 
 func newLedgerVerifyChainCmd(a *app) *cobra.Command {
-	var sthsPath, pubKey string
+	var sthsPath string
+	var pubKeys []string
 	cmd := &cobra.Command{
 		Use:   "verify-chain",
 		Short: "Verify that previously published tree heads are prefixes of the current ledger",
 		Long: `Verify a set of previously published signed tree heads (for example the
-sth/ objects of an export): every signature must verify with --pubkey, and every
-tree head must be an append-only prefix of the ledger now on main. A rewritten
-or truncated ledger fails. --sths is a JSON array of signed tree heads or a
-directory of sth/<size>.json files.`,
+sth/ objects of an export): every signature must verify with one of the
+--pubkey keys (repeat the flag after a key rotation), every tree head must be an
+append-only prefix of the ledger now on main, and every leaf record on main must
+match its leaf hash. A rewritten or truncated ledger fails. --sths is a JSON
+array of signed tree heads or a directory of sth/<size>.json files.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			if sthsPath == "" || pubKey == "" {
+			if sthsPath == "" || len(pubKeys) == 0 {
 				return errs.New(errs.InvalidArgument, "pass --sths and --pubkey")
 			}
-			pub, err := ledger.ParsePublicKey(pubKey)
-			if err != nil {
-				return errs.Wrap(errs.InvalidArgument, err, "public key")
+			var pubs []ed25519.PublicKey
+			for _, k := range pubKeys {
+				pub, err := ledger.ParsePublicKey(k)
+				if err != nil {
+					return errs.Wrap(errs.InvalidArgument, err, "public key")
+				}
+				pubs = append(pubs, pub)
 			}
 			heads, err := readSTHs(sthsPath)
 			if err != nil {
@@ -242,11 +248,11 @@ directory of sth/<size>.json files.`,
 				return err
 			}
 			defer closeConn(ctx, conn)
-			tree, err := ledger.LoadTree(ctx, conn, 0)
+			tree, err := ledger.LoadTreeChecked(ctx, conn)
 			if err != nil {
 				return a.invalid("%v", err)
 			}
-			if err := ledger.VerifyChain(heads, pub, tree); err != nil {
+			if err := ledger.VerifyChain(heads, pubs, tree); err != nil {
 				return a.invalid("%v", err)
 			}
 			a.emit("valid: %s are consistent with the current ledger (%d leaves)", plural(len(heads), "signed tree head"), tree.Size())
@@ -254,7 +260,7 @@ directory of sth/<size>.json files.`,
 		},
 	}
 	cmd.Flags().StringVar(&sthsPath, "sths", "", "JSON array of signed tree heads, or a directory of sth/<size>.json files")
-	cmd.Flags().StringVar(&pubKey, "pubkey", "", "ed25519 public key: 64 hex characters or a file containing them")
+	cmd.Flags().StringArrayVar(&pubKeys, "pubkey", nil, "ed25519 public key: 64 hex characters or a file containing them; repeat after a key rotation")
 	return cmd
 }
 

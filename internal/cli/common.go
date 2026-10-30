@@ -66,7 +66,7 @@ func (a *app) captureAndBuild(ctx context.Context, conn *pgx.Conn, bc *branchCon
 		return nil, err
 	}
 	a.log.Debug("captured", "transactions", res.Transactions, "events", res.Events, "end_lsn", res.FlushedLSN)
-	events, err := changeset.LoadEvents(ctx, conn, bc.branch.ID)
+	events, err := changeset.LoadEvents(ctx, conn, bc.branch.ID, res.FlushedLSN.String())
 	if err != nil {
 		return nil, err
 	}

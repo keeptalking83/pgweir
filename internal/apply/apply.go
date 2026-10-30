@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -153,7 +154,7 @@ func Apply(ctx context.Context, conn *pgx.Conn, tables []*schema.Table, m *Merge
 
 	// 8.2 Lock and re-verify every affected main row.
 	if err := verify(ctx, tx, byRef, ordered); err != nil {
-		return nil, err
+		return nil, classify(err, "verify main rows", byRef)
 	}
 	if opts.AfterVerify != nil {
 		if err := opts.AfterVerify(ctx); err != nil {
@@ -207,7 +208,8 @@ WHERE id = $1::uuid`, m.ID, res.MainLSNAfter, int64(appended.LeafIndex)); err !=
 	}
 	// 8.9
 	if err := tx.Commit(ctx); err != nil {
-		return nil, classify(err, "commit", nil)
+		// Deferred constraints are checked here.
+		return nil, classify(err, "commit", byRef)
 	}
 	return res, nil
 }
@@ -298,15 +300,18 @@ func execute(ctx context.Context, tx pgx.Tx, byRef map[schema.Ref]*schema.Table,
 			tag, err := br.Exec()
 			if err != nil {
 				_ = br.Close()
-				return classify(err, describe(s.action), byRef[refOf(s.action)])
+				return classify(err, describe(s.action), byRef)
 			}
 			if s.action.Kind == merge.Update && tag.RowsAffected() != 1 {
+				// The row is locked and verified, so only a BEFORE trigger
+				// or a row security policy can suppress the update.
 				_ = br.Close()
-				return errs.New(errs.Retry, "%s affected %d rows; rerun merge", describe(s.action), tag.RowsAffected())
+				return errs.New(errs.PGAborted, "%s affected %d rows (suppressed by a trigger or row security policy); the merge was rolled back",
+					describe(s.action), tag.RowsAffected())
 			}
 		}
 		if err := br.Close(); err != nil {
-			return classify(err, "apply batch", nil)
+			return classify(err, "apply batch", byRef)
 		}
 	}
 	return nil
@@ -316,17 +321,29 @@ func describe(a merge.Action) string {
 	return fmt.Sprintf("%s on %s.%s %s", a.Kind, a.Schema, a.Table, changeset.Key(a.PK))
 }
 
-// classify maps Postgres errors raised while applying (spec §10 step 9): a
-// unique violation on the target table's primary key means a row with that
-// key appeared after verification (RETRY); everything else aborts.
-func classify(err error, what string, t *schema.Table) error {
-	if pgErr, ok := pg.PgError(err); ok {
-		if t != nil && pgErr.Code == pg.UniqueViolation && pgErr.ConstraintName == t.PKConstraint && t.PKConstraint != "" {
+// classify maps Postgres errors raised while applying (spec §10 step 9). A
+// unique violation on a tracked table's primary key means a row with that
+// key appeared on main after verification, and a deadlock or lock timeout
+// means a concurrent writer: both are RETRY. Everything else aborts.
+func classify(err error, what string, byRef map[schema.Ref]*schema.Table) error {
+	var coded *errs.Error
+	if errors.As(err, &coded) {
+		return err
+	}
+	pgErr, ok := pg.PgError(err)
+	if !ok {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	switch pgErr.Code {
+	case pg.UniqueViolation:
+		t := byRef[schema.Ref{Schema: pgErr.SchemaName, Name: pgErr.TableName}]
+		if t != nil && t.PKConstraint != "" && pgErr.ConstraintName == t.PKConstraint {
 			return errs.Wrap(errs.Retry, err, "%s: a row with this key appeared on main after verification; rerun merge", what)
 		}
-		return errs.Wrap(errs.PGAborted, err, "%s rejected by Postgres; the merge was rolled back", what)
+	case pg.DeadlockDetected, pg.LockNotAvailable:
+		return errs.Wrap(errs.Retry, err, "%s: conflicting lock on main; rerun merge", what)
 	}
-	return fmt.Errorf("%s: %w", what, err)
+	return errs.Wrap(errs.PGAborted, err, "%s rejected by Postgres; the merge was rolled back", what)
 }
 
 // build returns the SQL for an action. Values are bound as text and cast

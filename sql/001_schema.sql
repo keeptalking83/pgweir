@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS pgweir.config (
 
 CREATE TABLE IF NOT EXISTS pgweir.branches (
   id           uuid PRIMARY KEY,
-  name         text UNIQUE NOT NULL,
+  name         text NOT NULL,                     -- unique among branches that are not DROPPED (index below)
   provider     text NOT NULL,                     -- local | neon | manual
   provider_ref jsonb NOT NULL DEFAULT '{}'::jsonb, -- provider-specific ids
   dsn          text NOT NULL,                     -- branch connection string (main is a trusted store, see SECURITY.md)
@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS pgweir.branches (
   created_at   timestamptz NOT NULL DEFAULT now(),
   updated_at   timestamptz NOT NULL DEFAULT now()
 );
+-- A dropped branch's name can be used again.
+CREATE UNIQUE INDEX IF NOT EXISTS branches_live_name ON pgweir.branches (name) WHERE status <> 'DROPPED';
 
 -- Raw captured events, append-only, one row per row-operation. Persisted before the slot is acknowledged.
 CREATE TABLE IF NOT EXISTS pgweir.events (
@@ -94,7 +96,22 @@ CREATE TABLE IF NOT EXISTS pgweir.ledger_sth (
 );
 
 -- Agent tagging helper. transactional=true so the message is ordered inside the agent's transaction.
+-- Malformed tags are rejected here, inside the agent's transaction, instead of stopping capture later.
+-- Numbers must fit an IEEE 754 double: the tag is canonicalized with RFC 8785.
 CREATE OR REPLACE FUNCTION pgweir.tag(t jsonb) RETURNS void
-LANGUAGE sql VOLATILE AS $$
-  SELECT pg_catalog.pg_logical_emit_message(true, 'pgweir', t::text)::text::void;
+LANGUAGE plpgsql VOLATILE AS $$
+BEGIN
+  IF pg_catalog.jsonb_typeof(t) IS DISTINCT FROM 'object'
+     OR pg_catalog.jsonb_typeof(t -> 'run_id') IS DISTINCT FROM 'string'
+     OR (t ->> 'run_id') = ''
+  THEN
+    RAISE EXCEPTION 'pgweir.tag() needs a JSON object with a non-empty string "run_id", got %', t
+      USING ERRCODE = 'invalid_parameter_value';
+  END IF;
+  IF pg_catalog.jsonb_path_exists(t, 'lax $.** ? (@.type() == "number" && @.abs() > 1e308)') THEN
+    RAISE EXCEPTION 'pgweir.tag(): numbers must fit a 64-bit float; send large values as strings'
+      USING ERRCODE = 'invalid_parameter_value';
+  END IF;
+  PERFORM pg_catalog.pg_logical_emit_message(true, 'pgweir', t::text);
+END
 $$;

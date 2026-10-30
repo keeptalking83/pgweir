@@ -109,16 +109,25 @@ type ConsistencySource interface {
 }
 
 // VerifyChain checks that a set of previously published tree heads is
-// signed by pub and that each is an append-only prefix of the next and of
-// the current ledger (spec §11.4 verify-chain).
-func VerifyChain(sths []SignedSTH, pub ed25519.PublicKey, current ConsistencySource) error {
+// signed by one of pubs (several after a key rotation) and that each is an
+// append-only prefix of the next and of the current ledger (spec §11.4
+// verify-chain).
+func VerifyChain(sths []SignedSTH, pubs []ed25519.PublicKey, current ConsistencySource) error {
 	if len(sths) == 0 {
 		return fmt.Errorf("no tree heads given")
+	}
+	keys := map[string]ed25519.PublicKey{}
+	for _, p := range pubs {
+		keys[KeyID(p)] = p
 	}
 	sorted := make([]SignedSTH, len(sths))
 	copy(sorted, sths)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].STH.TreeSize < sorted[j].STH.TreeSize })
 	for _, s := range sorted {
+		pub, ok := keys[s.STH.KeyID]
+		if !ok {
+			return fmt.Errorf("tree head %d was signed by key %s, which is not among the given public keys", s.STH.TreeSize, s.STH.KeyID)
+		}
 		if err := s.Verify(pub); err != nil {
 			return err
 		}

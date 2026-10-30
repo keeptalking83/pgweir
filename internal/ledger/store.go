@@ -215,6 +215,46 @@ func LoadTree(ctx context.Context, q pg.Querier, size uint64) (*Tree, error) {
 	return NewTree(leaves), nil
 }
 
+// LoadTreeChecked reads every leaf, recomputes each leaf hash from its
+// stored record and fails if one does not match: a record altered in place.
+func LoadTreeChecked(ctx context.Context, q pg.Querier) (*Tree, error) {
+	rows, err := q.Query(ctx, "SELECT leaf_index, leaf_hash, record FROM pgweir.ledger_leaves ORDER BY leaf_index")
+	if err != nil {
+		return nil, fmt.Errorf("read ledger leaves: %w", err)
+	}
+	defer rows.Close()
+	var leaves [][]byte
+	for rows.Next() {
+		var idx int64
+		var h, rec []byte
+		if err := rows.Scan(&idx, &h, &rec); err != nil {
+			return nil, err
+		}
+		if idx != int64(len(leaves)) {
+			return nil, fmt.Errorf("ledger leaf %d is missing: the ledger was altered", len(leaves))
+		}
+		if err := checkLeaf(uint64(idx), h, rec); err != nil {
+			return nil, err
+		}
+		leaves = append(leaves, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return NewTree(leaves), nil
+}
+
+func checkLeaf(idx uint64, leafHash, record []byte) error {
+	_, h, err := LeafHash(json.RawMessage(record))
+	if err != nil {
+		return fmt.Errorf("ledger leaf %d: %w", idx, err)
+	}
+	if !bytes.Equal(h, leafHash) {
+		return fmt.Errorf("ledger leaf %d: the stored record does not match its leaf hash: the ledger was altered", idx)
+	}
+	return nil
+}
+
 // LoadSTH reads the signed tree head of the given size (0: the latest).
 func LoadSTH(ctx context.Context, q pg.Querier, size uint64) (*SignedSTH, error) {
 	sql := "SELECT tree_size, root_hash, timestamp, key_id, signature FROM pgweir.ledger_sth "

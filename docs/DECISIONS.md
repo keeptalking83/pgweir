@@ -246,3 +246,53 @@ the network for anything but the Postgres image.
 **What.** The integration matrix runs Postgres 14, 15, 16, 17 and 18.
 **Why.** Postgres 18 is the current release and the whole suite passes on it.
 The specification's minimum (14) is unchanged.
+
+## 2026-10-30 — Fixes from the pre-release review
+
+- **Fork probe.** `branch create` writes a random key to `pgweir.config` on
+  main after the fork exists and refuses a fork that can read it. A
+  `--branch-dsn` pointing at main (or a replica of it) would otherwise have
+  REPLICA IDENTITY FULL, a publication and a slot created on main.
+- **Drift is checked at every capture**, by comparing every tracked table on
+  the branch with main before streaming, and again when a plan is computed
+  (every captured row must have exactly main's current columns). Before,
+  drift was only seen in Relation messages of the current capture, so a
+  schema change on main after an earlier `diff` produced spurious conflicts
+  or generic errors instead of `SCHEMA_DRIFT`.
+- **`branch drop` drains first.** For an OPEN branch without `--force`, drop
+  runs a capture before counting unmerged events; otherwise work the agent did
+  since the last `diff` was deleted silently.
+- **Branch names are unique among branches that are not DROPPED** (partial
+  unique index instead of `UNIQUE`), so a dropped branch's name can be reused,
+  as the error message always suggested. `Get` by name prefers the live
+  branch, else the most recent dropped one.
+- **FK cycles** are ordered by strongly connected components: a cycle is
+  placed as a group after the tables it references. The previous fallback
+  could place a table that references a cycle before it.
+- **Self-referencing rows** keep the first-touch order; the limitation and the
+  `DEFERRABLE` remedy are documented in `docs/design.md`.
+- **`pgweir.tag()` validates** its argument (object, non-empty string
+  `run_id`, numbers within double range) and raises inside the agent's
+  transaction, instead of letting capture abort later with `INVALID_TAG`.
+  RFC 8785 cannot represent numbers outside double range.
+- **`verify-chain` takes several `--pubkey`s** (key rotation) and recomputes
+  every leaf hash from its stored record; `export` refuses leaves whose
+  record does not match their hash.
+- **Neon parent check fails closed**: if main's endpoint cannot be looked
+  up, `branch create` stops instead of forking the default branch.
+- **Error classification**: the primary-key race is recognized by schema,
+  table and constraint name, also when a deferred key fails at COMMIT;
+  deadlocks and lock timeouts are RETRY (exit 3); an UPDATE suppressed by a
+  trigger or row security policy is exit 4, not RETRY, which would repeat
+  forever.
+- **Capture keeps the walsender alive** while persisting a large transaction
+  (a status update between insert chunks) and does not count its own
+  persistence time as server silence.
+- **SQL_ASCII databases are refused**: their values are not guaranteed to be
+  valid UTF-8 and would be altered by the JSON row encoding.
+- **Changesets are built from events up to `end_lsn`**, the same rule
+  `export --include-changesets` uses, so a concurrent `diff` cannot add events
+  between capture and plan.
+- **The branch connection string is pgweir's role.** SECURITY.md no longer
+  claims the agent cannot reach main; it documents granting a separate agent
+  role on the fork only.

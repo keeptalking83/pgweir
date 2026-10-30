@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/keeptalking83/pgweir/internal/branch"
+	"github.com/keeptalking83/pgweir/internal/capture"
 	"github.com/keeptalking83/pgweir/internal/errs"
 	"github.com/keeptalking83/pgweir/internal/pg"
 	"github.com/keeptalking83/pgweir/internal/provider"
@@ -138,9 +139,17 @@ Forks made with the manual provider are left in place; only the slot is dropped.
 			if err != nil {
 				return err
 			}
-			// The local provider must not see our connection to main while
-			// it drops the fork from the maintenance database; that is fine,
-			// it only blocks forking main, not dropping a branch.
+			if b.Status == branch.StatusOpen && !force {
+				// Drain the slot first: work the agent did since the last
+				// diff is not in pgweir.events yet.
+				bc, err := loadBranchContext(ctx, conn, b.Name)
+				if err != nil {
+					return err
+				}
+				if _, err := capture.Run(ctx, conn, bc.branch, bc.tables, capture.Options{IdleTimeout: a.cfg.IdleTimeout, Log: a.log}); err != nil {
+					return fmt.Errorf("cannot check branch %q for unmerged changes (pass --force to drop it anyway): %w", b.Name, err)
+				}
+			}
 			if err := branch.Drop(ctx, conn, b, p, force, a.log); err != nil {
 				return err
 			}

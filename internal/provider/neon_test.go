@@ -136,6 +136,18 @@ func TestNeonParentMismatch(t *testing.T) {
 	}
 }
 
+func TestNeonEndpointLookupFailsClosed(t *testing.T) {
+	f := &fakeNeon{}
+	n := newTestNeon(t, f, "")
+	_, _, err := n.Fork(context.Background(), "postgresql://app:pw@ep-other-999.us-east-2.aws.neon.tech/shop", "demo")
+	if err == nil || !strings.Contains(err.Error(), "look up main's endpoint") {
+		t.Fatalf("expected endpoint lookup failure, got %v", err)
+	}
+	if f.created != nil {
+		t.Fatal("branch created although main's endpoint could not be checked")
+	}
+}
+
 func TestNeonNeedsCredentials(t *testing.T) {
 	t.Setenv("NEON_API_KEY", "")
 	t.Setenv("NEON_PROJECT_ID", "")

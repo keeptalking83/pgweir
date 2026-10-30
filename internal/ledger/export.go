@@ -17,8 +17,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jackc/pglogrepl"
-
 	"github.com/keeptalking83/pgweir/internal/changeset"
 	"github.com/keeptalking83/pgweir/internal/pg"
 )
@@ -159,6 +157,9 @@ func loadLeaves(ctx context.Context, q pg.Querier, start, end uint64) ([]exporte
 		if err := rows.Scan(&idx, &h, &rec); err != nil {
 			return nil, err
 		}
+		if err := checkLeaf(uint64(idx), h, rec); err != nil {
+			return nil, err
+		}
 		canon, _, err := LeafHash(json.RawMessage(rec))
 		if err != nil {
 			return nil, err
@@ -209,25 +210,11 @@ WHERE m.status = 'APPLIED' ORDER BY m.leaf_index`)
 		if err := json.Unmarshal(m.tables, &tables); err != nil {
 			return written, fmt.Errorf("merge %s: decode tables: %w", m.id, err)
 		}
-		events, err := changeset.LoadEvents(ctx, q, m.meta.BranchID)
+		events, err := changeset.LoadEvents(ctx, q, m.meta.BranchID, m.meta.EndLSN)
 		if err != nil {
 			return written, err
 		}
-		end, err := pglogrepl.ParseLSN(m.meta.EndLSN)
-		if err != nil {
-			return written, err
-		}
-		var covered []changeset.Event
-		for _, e := range events {
-			lsn, err := pglogrepl.ParseLSN(e.CommitLSN)
-			if err != nil {
-				return written, err
-			}
-			if lsn <= end {
-				covered = append(covered, e)
-			}
-		}
-		cs, err := changeset.Build(m.meta, tables, covered)
+		cs, err := changeset.Build(m.meta, tables, events)
 		if err != nil {
 			return written, err
 		}

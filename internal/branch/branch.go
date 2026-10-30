@@ -179,9 +179,10 @@ func scanBranch(row pgx.Row) (*Branch, error) {
 	return &b, nil
 }
 
-// Get returns the branch with the given name.
+// Get returns the branch with the given name: the one that is not DROPPED,
+// or else the most recently created.
 func Get(ctx context.Context, q pg.Querier, name string) (*Branch, error) {
-	b, err := scanBranch(q.QueryRow(ctx, selectBranch+" WHERE name = $1", name))
+	b, err := scanBranch(q.QueryRow(ctx, selectBranch+" WHERE name = $1 ORDER BY status = 'DROPPED', created_at DESC LIMIT 1", name))
 	if err == pgx.ErrNoRows {
 		return nil, errs.New(errs.InvalidArgument, "branch %q does not exist", name)
 	}
