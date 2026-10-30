@@ -28,10 +28,13 @@ prefix `pgweir`. It writes nothing to any table.
    applies to the statements after it.
 4. **Tags do not carry over.** The next transaction is `untagged` until it
    calls `pgweir.tag()` again.
-5. **A malformed tag stops the merge.** A `pgweir` message that is not a JSON
-   object with a string `run_id` aborts capture with `INVALID_TAG`; the branch
-   can then only be dropped. `pgweir.tag()` takes `jsonb`, so passing anything
-   that is not JSON already fails inside the agent's own transaction.
+5. **Malformed tags are rejected at once.** `pgweir.tag()` raises an error,
+   inside the agent's own transaction, unless its argument is a JSON object
+   with a non-empty string `run_id` and every number fits a 64-bit float.
+   Tags are canonicalized with RFC 8785, so numbers are stored as IEEE 754
+   doubles; send identifiers and large values as strings. (A `pgweir` message
+   emitted without `pgweir.tag()` and failing these checks aborts capture with
+   `INVALID_TAG`; the branch can then only be dropped.)
 
 Run metadata appears in the changeset (`pgweir diff --json`, `"runs"`), and
 the run objects of every merge are part of its signed ledger record. When the
@@ -43,7 +46,8 @@ Tags are claims made by the agent, not authenticated identities (see
 
 ## Privileges
 
-If the agent connects with its own role (recommended), it needs:
+If the agent connects with its own role (recommended, see
+[SECURITY.md](../SECURITY.md)), grant on the fork after `branch create`:
 
 ```sql
 GRANT USAGE ON SCHEMA pgweir TO agent;
@@ -51,8 +55,7 @@ GRANT EXECUTE ON FUNCTION pgweir.tag(jsonb) TO agent;
 ```
 
 plus its usual privileges on the tracked tables. `pgweir.tag()` needs neither
-`REPLICATION` nor superuser. Grant these on main before creating branches so
-forks inherit them.
+`REPLICATION` nor superuser.
 
 ## Snippets
 

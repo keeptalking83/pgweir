@@ -70,7 +70,11 @@ the fork before `branch create`), so it records a warning.
 1. Read the fork's current WAL position, the *target*.
 2. `START_REPLICATION SLOT pw_name LOGICAL <flushed_lsn>` with
    `proto_version '1'`, `publication_names 'pgweir'`, `messages 'true'`.
-3. Decode Begin, Relation, Insert, Update, Delete, Message and Commit.
+3. Before streaming, compare every tracked table on the branch with main
+   (names, types, primary key). Events captured earlier are merged against
+   main's current definition, so a schema change on either side since the
+   fork aborts with `SCHEMA_DRIFT`.
+4. Decode Begin, Relation, Insert, Update, Delete, Message and Commit.
    - **Relation**: the table must be tracked, have replica identity FULL, and
      have the same column names and types as main, in order. Types are
      compared by name (`format_type`), never by OID, so forks restored from a
@@ -81,10 +85,10 @@ the fork before `branch create`), so it records a warning.
      the new row are copied from the old row. If the primary key changed, the
      update becomes a delete of the old key and an insert of the new one.
    - **Truncate** aborts with `TRUNCATE_NOT_SUPPORTED`.
-4. On Commit, insert the transaction's events into `pgweir.events` and set
+5. On Commit, insert the transaction's events into `pgweir.events` and set
    `capture_progress.flushed_lsn` to the commit LSN, in one transaction on
    main. Only after that commit succeeds is the slot acknowledged.
-5. Stop when a commit at or past the target has been stored, or when the
+6. Stop when a commit at or past the target has been stored, or when the
    server reports it has decoded past the target and sent nothing for
    `--idle-timeout` (default 2s).
 
@@ -195,8 +199,16 @@ sequenceDiagram
   them. Deletes run after, tables in reverse order, rows in the branch's own
   delete order. A child re-pointed to a new parent therefore no longer
   references the old parent when the old parent is deleted. Tables in a
-  foreign-key cycle are ordered by name and rely on that order or on
-  `DEFERRABLE` constraints.
+  foreign-key cycle form one group, placed after every table the group
+  references and ordered by name inside it.
+- **Limitation: rows that reference rows of the same table.** Inside one
+  table, rows are applied in the order the branch first touched them, which
+  is not always a valid order for a self-referencing foreign key (for
+  example: update row 1, insert row 2, then point row 1 at row 2). Such a
+  merge fails with exit 4 and is rolled back. Declare self-referencing and
+  cyclic foreign keys `DEFERRABLE` (`INITIALLY IMMEDIATE` keeps today's
+  behaviour for your application): the apply transaction defers them to
+  commit, where any valid final state passes.
 - **Values** are bound as text and cast to the column type
   (`$1::text::numeric(12,2)`), so Postgres parses exactly the captured text.
   Generated columns are never written; identity columns `GENERATED ALWAYS` are
@@ -207,9 +219,11 @@ sequenceDiagram
   `nextval` never goes backwards, so this is safe while main keeps inserting;
   `setval` could move the sequence back. More than one million calls aborts
   with `SEQUENCE_GAP_TOO_LARGE` and prints the `setval` to run by hand.
-- **Errors.** Foreign-key, check, unique (other than the primary-key race)
-  and trigger errors roll back the transaction: exit 4, the merge is
-  `ABORTED`, the branch stays `OPEN`.
+- **Errors.** A deadlock or lock timeout is reported like the primary-key
+  race (exit 3). Foreign-key, check and other unique violations, trigger
+  errors, and an UPDATE that a trigger or row security policy suppressed roll
+  back the transaction: exit 4, the merge is `ABORTED`, the branch stays
+  `OPEN`.
 
 ## Ledger
 
@@ -230,7 +244,9 @@ stateDiagram-v2
 ```
 
 A branch merges once. After `MERGED`, `diff` and `merge` are refused; drop it
-and create a new branch for further work.
+and create a new branch for further work. A dropped branch's name can be used
+again. `branch drop` on an `OPEN` branch first drains its slot and refuses if
+the agent left changes that were never merged, unless `--force`.
 
 ## Exit codes
 
@@ -247,7 +263,7 @@ and create a new branch for further work.
 
 | Code | Raised when |
 |---|---|
-| `SCHEMA_DRIFT` | a tracked table's columns, types or key differ between branch and main |
+| `SCHEMA_DRIFT` | a tracked table's columns, types or key differ between branch and main, now or since the events were captured |
 | `TRUNCATE_NOT_SUPPORTED` | the branch truncated a tracked table |
 | `REPLICA_IDENTITY_NOT_FULL` | a change arrived without its old row |
 | `TOAST_WITHOUT_OLD` | an unchanged TOAST value arrived without an old row |

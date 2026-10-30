@@ -8,6 +8,8 @@ merges the rows it changed back into main with a three-way merge, under a
 conflict policy you choose, and records every merge in a signed,
 tamper-evident ledger.**
 
+![pgweir demo: branch, agent writes, conflicting edit on main, diff, merge with fail then skip, prove and verify](docs/demo.gif)
+
 A weir is a low dam that lets water through under control. pgweir is a
 command-line sidecar: it does not replace Postgres, needs no extension and no
 superuser, and works on vanilla and managed Postgres 14 to 18.
@@ -276,8 +278,10 @@ prefer UUID keys where main and agents both insert.
 ## Security
 
 Main is the trusted store: it holds branch connection strings and the ledger.
-Give agents their own role with plain DML privileges on the branch. The
-threat model, key handling and agent isolation are described in
+The connection string `branch create` prints uses pgweir's own role, which
+can also reach main; the quickstart gives it to the simulated agent for
+brevity. Give a real agent its own role with plain DML privileges on the fork
+only. The threat model, key handling and agent isolation are described in
 [SECURITY.md](SECURITY.md).
 
 ## Status

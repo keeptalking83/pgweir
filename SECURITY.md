@@ -15,9 +15,10 @@ what it only detects, and what it assumes.
 
 ### What pgweir protects
 
-- **Main is never written by the agent.** The agent receives a connection
-  string for a fork. Its changes reach main only through `pgweir merge`, which
-  applies them in one transaction, under a conflict policy chosen by a human.
+- **Changes reach main only through a merge**, provided the agent cannot
+  connect to main on its own (see "Isolating the agent" below). The agent
+  works on a fork; `pgweir merge` applies its changes in one transaction,
+  under a conflict policy chosen by a human.
 - **Merges apply only what was decided.** Every row the plan touches is locked
   with `SELECT ... FOR UPDATE` and compared with the row the plan was computed
   from. If main changed in between, the transaction is rolled back and the
@@ -25,6 +26,9 @@ what it only detects, and what it assumes.
 - **Captured changes are durable before they are acknowledged.** The branch's
   replication slot is acknowledged only after the change is stored on main, so
   a crash cannot lose or duplicate agent writes.
+- **A fork is never main.** `branch create` writes a random marker to main
+  after the fork exists and refuses a "fork" that can see it, so a mistyped
+  `--branch-dsn` cannot turn main into a branch.
 
 ### What pgweir only detects: the ledger is tamper-evident, not tamper-proof
 
@@ -72,38 +76,53 @@ signing key can rewrite history undetected.
 
 ### Isolating the agent
 
-Give the agent its own role on the branch, not pgweir's role:
+The connection string printed by `branch create` uses **pgweir's own role**:
+the owner of the tracked tables, with `REPLICATION`. With the `local`
+provider the fork lives on main's server, and with `neon` the fork keeps the
+role's password, so these credentials may also open main. The quickstart
+hands them to a simulated agent for brevity; do not do that with an agent you
+do not trust.
+
+Give the agent its own role, with privileges **on the fork only**, granted
+after `branch create`:
 
 ```sql
+-- once per server, by a role with CREATEROLE (local provider), or on the
+-- Neon branch itself, where a role created with SQL exists only on that branch
 CREATE ROLE agent LOGIN PASSWORD '...';
-GRANT USAGE ON SCHEMA public TO agent;
+
+-- on the fork, connected with the connection string from branch create
+GRANT USAGE ON SCHEMA public, pgweir TO agent;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.orders, public.customers TO agent;
-GRANT USAGE ON SCHEMA pgweir TO agent;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO agent;
 GRANT EXECUTE ON FUNCTION pgweir.tag(jsonb) TO agent;
 ```
 
-Run these on main before creating branches, so that forks inherit them. A
-role like this can call `pgweir.tag()` but cannot touch replication slots, run
-DDL on tables it does not own, or change replica identity.
+Then give the agent the fork's connection string with the `agent` role's
+credentials. Grants made on the fork do not exist on main. With the `local`
+provider the role exists server-wide, so it can still connect to main, but it
+has no privileges on main's tables unless you grant them; to keep it out
+entirely, `REVOKE CONNECT ON DATABASE <main> FROM PUBLIC` and grant `CONNECT`
+only where needed.
 
-An agent with more privileges cannot write to main either, but it can make a
-branch unmergeable or hide its own writes:
+A role like this can call `pgweir.tag()` but cannot touch replication slots,
+run DDL on tables it does not own, or change replica identity. An agent with
+more privileges on the fork can make the branch unmergeable or hide its own
+writes, but not write to main:
 
-| Agent privilege on the branch | What it allows | Effect |
+| Agent privilege on the fork | What it allows | Effect |
 |---|---|---|
 | `REPLICATION` | dropping or advancing the slot | slot dropped: the branch becomes `FAILED`; slot advanced: skipped writes are never merged |
 | table ownership | DDL, `ALTER TABLE ... REPLICA IDENTITY` | capture aborts with `SCHEMA_DRIFT` or `REPLICA_IDENTITY_NOT_FULL` |
 | `TRUNCATE` | truncating a tracked table | capture aborts with `TRUNCATE_NOT_SUPPORTED` |
 
-In every case the result is a merge that fails or includes less, never a
-write to main that bypasses the merge.
-
 ### Run tags are claims, not identities
 
-`pgweir.tag()` records whatever JSON the agent sends: `run_id`,
-`tool_call_id`, `agent` and any other fields. pgweir stores and signs these
-values as given. They are useful attribution from a cooperating agent
-framework, not authenticated identities.
+`pgweir.tag()` records whatever JSON object the agent sends: `run_id`,
+`tool_call_id`, `agent` and any other fields. pgweir stores and signs them in
+RFC 8785 canonical form (numbers as IEEE 754 doubles). They are useful
+attribution from a cooperating agent framework, not authenticated
+identities.
 
 ### Triggers on main
 

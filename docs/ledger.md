@@ -41,7 +41,7 @@ so numbers never need canonicalizing.
 | `main_lsn_after` | main's WAL position inside the apply transaction |
 | `changeset_hash` | SHA-256 of the canonical changeset (`pgweir diff --json`) |
 | `conflicts_hash` | SHA-256 of the canonical array of conflicts, in changeset order |
-| `runs` | the agent runs that wrote the merged rows, sorted by `run_id` |
+| `runs` | the agent runs that wrote any row of the changeset (applied, skipped or conflicting), sorted by `run_id` |
 | `applied_at` | RFC 3339 UTC with milliseconds; equal to the tree head's timestamp |
 
 The full changeset is not in the leaf. It stays in `pgweir.events` and is
@@ -117,9 +117,11 @@ proof between two signed tree heads.
 
 `pgweir ledger verify-chain --sths <file-or-dir> --pubkey pgweir.pub` takes
 tree heads you saved earlier (a JSON array of signed tree heads, or a
-directory such as an export), verifies every signature, and proves that each
-one is a prefix of the ledger now on main. A ledger that was rewritten or
-truncated after you saved a tree head fails this check.
+directory such as an export), verifies every signature, proves that each one
+is a prefix of the ledger now on main, and recomputes every leaf hash from
+its stored record. A ledger that was rewritten or truncated after you saved a
+tree head, or a record edited in place, fails this check. After a key
+rotation, pass `--pubkey` once per key.
 
 Saved tree heads are what make tampering detectable. Publish them where the
 operator of main cannot change them: an Object Lock bucket, a transparency
@@ -139,6 +141,7 @@ changesets/<merge_id>.json         canonical changeset (with --include-changeset
 - A leaf file holds at most `--segment` leaves (default 1000) and ends on a
   segment boundary or at the last leaf. Later exports start at the first leaf
   not yet exported, so no file is ever rewritten.
+- A leaf whose stored record does not match its leaf hash is not exported.
 - Objects are canonical JSON and are never overwritten. On S3 pgweir reads
   before writing and writes with `If-None-Match: *`. An existing object with
   different content is an error: the ledger changed after it was exported.

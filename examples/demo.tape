@@ -13,8 +13,10 @@ Set Width 1280
 Set Height 820
 Set Padding 16
 Set TypingSpeed 35ms
+Env DEMO_PAUSE "2.5"
 
 Type "./examples/conflict_demo.sh"
 Sleep 400ms
 Enter
-Sleep 28s
+Wait@120s
+Sleep 4s

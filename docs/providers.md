@@ -149,6 +149,8 @@ Uses a fork you created yourself, by any means, and passed with
 pgweir branch create audit_fix --provider manual --branch-dsn "$FORK_DSN"
 ```
 
+- pgweir refuses a connection string that reaches main itself (it writes a
+  marker to main and checks that the fork cannot see it).
 - pgweir cannot verify that nothing was written to the fork between its
   creation and the replication slot. It prints a warning and records
   `provider_ref.warning = "unverified_base"`. Do not let anyone write to the

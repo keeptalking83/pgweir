@@ -16,10 +16,14 @@ export PGWEIR_SIGNING_KEY=pgweir.key
 MAIN="$PGWEIR_MAIN_DSN"
 rm -f pgweir.key pgweir.pub proof.json
 
-# run prints a command, then runs it in this shell.
+# run prints a command, runs it in this shell and returns its status.
+# DEMO_PAUSE (seconds, default 0) slows the demo down for recordings.
 run() {
   printf '\n\033[1m$ %s\033[0m\n' "$1"
-  eval "$1"
+  local status=0
+  eval "$1" || status=$?
+  sleep "${DEMO_PAUSE:-0}"
+  return "$status"
 }
 
 run 'pgweir init --tables "public.customers,public.orders"'
