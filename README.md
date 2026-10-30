@@ -40,7 +40,9 @@ pgweir closes that loop:
 ## Quickstart
 
 You need Docker, Go 1.25 or later, `psql`, and Python 3. Five minutes, start
-to finish.
+to finish. Without Go, download the `pgweir` binary for Linux or macOS from
+[Releases](https://github.com/keeptalking83/pgweir/releases), put it on your
+`PATH`, and skip the `go install` line.
 
 ```sh
 git clone https://github.com/keeptalking83/pgweir && cd pgweir
